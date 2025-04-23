@@ -4,6 +4,7 @@ import math
 import warnings
 from sys import maxsize
 import json
+from gamelib.navigation import ShortestPathFinder
 
 """
 Most of the algo code you write will be in this file unless you create new
@@ -53,6 +54,7 @@ class AlgoStrategy(gamelib.AlgoCore):
         game engine.
         """
         game_state = gamelib.GameState(self.config, turn_state)
+        
 
         gamelib.debug_write(
             "Performing turn {} of your custom algo strategy".format(
@@ -66,75 +68,174 @@ class AlgoStrategy(gamelib.AlgoCore):
         self.offense(game_state)
         game_state.submit_turn()
 
+
     def defense(self, game_state):
-        # Build line of walls
-        wall_pos = [[i, 13] for i in range(28)]
-        del wall_pos[13:15]  # make hole middle
+        # Build basic defense first
+        self.basic_d(game_state)
+
+        # Upgrades
+        self.upgrades(game_state)
+
+    def basic_d(self, game_state):
+        """Turrets on edges and basic wall funnel."""
+        turret_pos = [
+            [1, 12],
+            [2, 12],
+            [3, 11],
+            [3, 10],
+            [25, 12],
+            [26, 12],
+            [24, 11],
+            [24, 10],
+            [7, 10],
+            [20, 10],
+        ]
+        game_state.attempt_spawn(TURRET, turret_pos)
+
+        wall_pos = [[0, 13], [27, 13], [4, 9], [23, 9]]
+        # inner funnel diagonals
+        for i in range(6, 14):
+            wall_pos.append([i, 16 - i])
+            wall_pos.append([i + 8, i - 3])
+
         game_state.attempt_spawn(WALL, wall_pos)
 
-        # Add support two rows below
-        support_pos = [[11, 12], [16, 12]]
-        game_state.attempt_spawn(SUPPORT, support_pos)
+        if game_state.turn_number >= 1:
+            # Start building outer funnel wall
+            wall_pos = [[5, 8], [6, 7], [22, 8], [21, 7]]
+            game_state.attempt_spawn(WALL, wall_pos)
 
-        # Add main turrets
-        main_turret_pos = [[12, 12], [15, 12], [12, 10], [15, 10]]
-        game_state.attempt_spawn(TURRET, main_turret_pos)
-
-        if game_state.turn_number >= 3:
-            # Add supports, turrets
-            support_pos.extend([[10, 12], [17, 12]])
+        if game_state.turn_number >= 2:
+            # Extend turrets and build two supports in middle
+            support_pos = [[13, 7], [14, 7]]
             game_state.attempt_spawn(SUPPORT, support_pos)
 
-            lower_turret_pos = [[11, 8], [17, 8], [9, 5], [18, 5]]
-            game_state.attempt_spawn(TURRET, lower_turret_pos)
+            ext_pos = [[2, 11], [25, 11], [6, 11], [20, 11]]
+            game_state.attempt_spawn(TURRET, ext_pos)
 
-        if game_state.turn_number >= 6:
-            # start upgrades, more turrets
-            game_state.attempt_upgrade(main_turret_pos)
+            support_pos = [[13, 6], [14, 6], [12, 6], [15, 6]]
+            game_state.attempt_spawn(SUPPORT, support_pos)
 
-            sub_turret_pos = [[3, 11], [7, 11], [20, 11], [24, 11]]
-            game_state.attempt_spawn(TURRET, sub_turret_pos)
+            ext_pos = [[4, 10], [23, 10], [8, 9], [19, 9]]
+            game_state.attempt_spawn(TURRET, ext_pos)
 
+            ext_pos = [[3, 12], [24, 12], [4, 9], [23, 9], [7, 11], [20, 11]]
+            game_state.attempt_spawn(TURRET, ext_pos)
+
+            support_pos = [[11, 7], [16, 7]]
+            game_state.attempt_spawn(SUPPORT, support_pos)
+
+            ext_pos = [[9, 8], [6, 12], [18, 8], [21, 12]]
+            game_state.attempt_spawn(TURRET, ext_pos)
+
+    def upgrades(self, game_state):
+        # Upgrade edge walls and turrets
+        game_state.attempt_upgrade([[0, 13], [27, 13], [7, 10], [20, 10]])
+
+        # Support
+        game_state.attempt_upgrade([[13, 7], [14, 7]])
+
+        # Further upgrades are tried once every 3 turns, leave 8 backup points
+        if game_state.turn_number % 3 == 0:
+            game_state.attempt_upgrade([[2, 11], [25, 11], [13, 6], [14, 6]])
+
+        if game_state.turn_number % 7 == 0:
+            game_state.attempt_upgrade(
+                [
+                    [4, 10],
+                    [23, 10],
+                    [8, 9],
+                    [19, 9],
+                    [3, 12],
+                    [24, 12],
+                    [4, 9],
+                    [23, 9],
+                    [7, 11],
+                    [20, 11],
+                    [11, 7],
+                    [16, 7],
+                ]
+            )
+    
     def offense(self, game_state):
-        """Interceptors every round (I).
-        Interchange demolishers and scouts (DS).
-        Interchange position of I and DS every round."""
-        ldiagonal = [
-            [0, 13],
-            [1, 12],
-            [2, 11],
-            [3, 10],
-            [4, 9],
-            [5, 8],
-            [6, 7],
-            [7, 6],
-            [8, 5],
-            [9, 4],
-            [10, 3],
-            [11, 2],
-            [12, 1],
-            [13, 0],
+            """Offense strategy:
+        - Deploy interceptors every turn (default).
+        - Dynamically calculate Scouts and Demolishers based on enemy structures.
+        - Adapt to ensure survival, breaking through, or dealing maximum damage.
+        """
+        # Left and right diagonal coordinates
+            ldiagonal = [
+            [0, 13], [1, 12], [2, 11], [3, 10], [4, 9], [5, 8], [6, 7], [7, 6],
+            [8, 5], [9, 4], [10, 3], [11, 2], [12, 1], [13, 0]
         ]
-        rdiagonal = [[i + 14, i] for i in range(14)]
-        ldiagonal.extend(rdiagonal)
+        
+            rdiagonal = [[i + 14, i] for i in range(14)]
 
-        # Interchange scouts and demolishers
-        if random.randint(0, 1):
+            # Default interceptors: one on each diagonal
             spawn_positions = []
-            for i in range(6):
-                spawn_positions.append(random.choice(ldiagonal))
-            game_state.attempt_spawn(SCOUT, spawn_positions)
-        else:
-            spawn_positions = []
-            for i in range(2):
-                spawn_positions.append(random.choice(ldiagonal))
-            game_state.attempt_spawn(DEMOLISHER, spawn_positions)
-
-        # Interceptor
-        spawn_positions = []
-        for i in range(2):
             spawn_positions.append(random.choice(ldiagonal))
-        game_state.attempt_spawn(INTERCEPTOR, spawn_positions)
+            spawn_positions.append(random.choice(rdiagonal))
+            game_state.attempt_spawn(INTERCEPTOR, spawn_positions)
+
+            # Determine ideal paths
+            pathfinder = ShortestPathFinder()
+            pathfinder.initialize_map(game_state)  # Ensure the map is initialized
+
+            # Flatten and filter only valid (x, y) tuples
+            enemy_edges_raw = game_state.game_map.get_edges()[2:]  # Bottom + Left edges
+            enemy_edges = [point for edge in enemy_edges_raw for point in edge if isinstance(point, (tuple, list)) and len(point) == 2]
+            ideal_path_left = pathfinder.navigate_multiple_endpoints(
+                spawn_positions[0], enemy_edges, game_state
+            )
+            ideal_path_right = pathfinder.navigate_multiple_endpoints(
+                spawn_positions[1], enemy_edges, game_state
+            )
+
+            # Analyze enemy structures along the paths
+            def analyze_path(path):
+                enemy_structures = []
+                for location in path:
+                    if game_state.game_map[location]:  # Check if there are units at the location
+                        unit = game_state.game_map[location][0]
+                        if unit.player_index != 0:  # Enemy structure
+                            unit_config = self.config["unitInformation"][unit.unit_type]
+                            enemy_structures.append({
+                                "location": location,
+                                "health": unit.health,
+                                "type": unit.unit_type,
+                                "range": unit_config.get("attackRange", 0),
+                                "damage": unit_config.get("attackDamageWalker", 0)
+                            })
+                return enemy_structures
+
+            if ideal_path_left:
+                enemy_structures_left = analyze_path(ideal_path_left)
+            if ideal_path_right:
+                enemy_structures_right = analyze_path(ideal_path_right)
+
+            # Simulate damage and decide unit deployment
+            def simulate_and_deploy(path, enemy_structures):
+                total_damage = sum(structure["damage"] for structure in enemy_structures)
+
+                # Decide unit type and quantity
+                if total_damage == 0:
+                    # No defenses, send Scouts to score
+                    game_state.attempt_spawn(SCOUT, path[0], 5)  # Deploy 5 Scouts
+                else:
+                    # Defenses present, calculate required units
+                    total_health = sum(structure["health"] for structure in enemy_structures)
+                    if total_health < 50:  # Arbitrary threshold for weak defenses
+                        game_state.attempt_spawn(SCOUT, path[0], 5)  # Deploy 5 Scouts
+                    else:
+                        game_state.attempt_spawn(DEMOLISHER, path[0], 3)  # Deploy 3 Demolishers
+
+            if ideal_path_left:
+                # Simulate and deploy for left path
+                simulate_and_deploy(ideal_path_left, enemy_structures_left)
+            if ideal_path_right:
+                simulate_and_deploy(ideal_path_right, enemy_structures_right)
+            
+
 
 
 if __name__ == "__main__":
