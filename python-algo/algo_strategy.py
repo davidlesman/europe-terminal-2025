@@ -6,6 +6,7 @@ from sys import maxsize
 import json
 from gamelib.navigation import ShortestPathFinder
 
+
 """
 Most of the algo code you write will be in this file unless you create new
 modules yourself. Start by modifying the 'on_turn' function.
@@ -26,6 +27,9 @@ class AlgoStrategy(gamelib.AlgoCore):
         seed = random.randrange(maxsize)
         random.seed(seed)
         gamelib.debug_write("Random seed: {}".format(seed))
+        self.breaches_last_turn = []
+        self.scored_on_locations = []
+        self.scout_attack_side = False  # 0 for left, 1 for right
 
     def on_game_start(self, config):
         """
@@ -44,6 +48,23 @@ class AlgoStrategy(gamelib.AlgoCore):
         SP = 0
         # This is a good place to do initial setup
         self.scored_on_locations = []
+        self.player_index = 0
+        self.unit_type_to_index = {
+            unit["shorthand"]: i for i, unit in enumerate(config["unitInformation"])
+        }
+
+    def on_action_frame(self, turn_string):
+        self.breaches_last_turn = []
+        try:
+            events = json.loads(turn_string)
+            for frame_event in events.get("events", {}).get("breach", []):
+                if len(frame_event) >= 3:
+                    x, y, player = frame_event[:3]
+                    if player != self.player_index:
+                        self.breaches_last_turn.append([x, y])
+                        gamelib.debug_write(f"Enemy breached at {x}, {y}")
+        except Exception as e:
+            gamelib.debug_write(f"[ERROR] Failed to parse action frame: {e}")
 
     def on_turn(self, turn_state):
         """
@@ -54,7 +75,6 @@ class AlgoStrategy(gamelib.AlgoCore):
         game engine.
         """
         game_state = gamelib.GameState(self.config, turn_state)
-        
 
         gamelib.debug_write(
             "Performing turn {} of your custom algo strategy".format(
@@ -67,7 +87,6 @@ class AlgoStrategy(gamelib.AlgoCore):
         self.defense(game_state)
         self.offense(game_state)
         game_state.submit_turn()
-
 
     def defense(self, game_state):
         # Build basic defense first
@@ -119,13 +138,16 @@ class AlgoStrategy(gamelib.AlgoCore):
             ext_pos = [[4, 10], [23, 10], [8, 9], [19, 9]]
             game_state.attempt_spawn(TURRET, ext_pos)
 
+            wall_pos = [[7, 6], [20, 6], [1, 13], [26, 13]]
+            game_state.attempt_spawn(WALL, wall_pos)
+
             ext_pos = [[3, 12], [24, 12], [4, 9], [23, 9], [7, 11], [20, 11]]
             game_state.attempt_spawn(TURRET, ext_pos)
 
-            support_pos = [[11, 7], [16, 7]]
+            support_pos = [[11, 7], [16, 7], [12, 7], [15, 7]]
             game_state.attempt_spawn(SUPPORT, support_pos)
 
-            ext_pos = [[9, 8], [6, 12], [18, 8], [21, 12]]
+            ext_pos = [[9, 8], [6, 12], [18, 8], [21, 12], [10, 7], [17, 7]]
             game_state.attempt_spawn(TURRET, ext_pos)
 
     def upgrades(self, game_state):
@@ -156,86 +178,51 @@ class AlgoStrategy(gamelib.AlgoCore):
                     [16, 7],
                 ]
             )
-    
+
     def offense(self, game_state):
-            """Offense strategy:
-        - Deploy interceptors every turn (default).
-        - Dynamically calculate Scouts and Demolishers based on enemy structures.
-        - Adapt to ensure survival, breaking through, or dealing maximum damage.
-        """
-        # Left and right diagonal coordinates
-            ldiagonal = [
-            [0, 13], [1, 12], [2, 11], [3, 10], [4, 9], [5, 8], [6, 7], [7, 6],
-            [8, 5], [9, 4], [10, 3], [11, 2], [12, 1], [13, 0]
-        ]
-        
-            rdiagonal = [[i + 14, i] for i in range(14)]
+        left_spawns = [[8, 5], [9, 4], [10, 3], [11, 2], [12, 1], [13, 0]]
+        right_spawns = [[19, 5], [14, 0], [15, 1], [16, 2], [17, 3], [18, 4]]
 
-            # Default interceptors: one on each diagonal
-            spawn_positions = []
-            spawn_positions.append(random.choice(ldiagonal))
-            spawn_positions.append(random.choice(rdiagonal))
-            game_state.attempt_spawn(INTERCEPTOR, spawn_positions)
+        # Interceptors: limit to 2 per turn by default
+        interceptor_pos = [[8, 5], [19, 5]]
+        interceptors_spawned = 0
+        for spawn in interceptor_pos:
+            if interceptors_spawned >= 2:
+                break
+            if game_state.get_resource(MP) >= 1 and game_state.attempt_spawn(
+                INTERCEPTOR, spawn
+            ):
+                interceptors_spawned += 1
 
-            # Determine ideal paths
-            pathfinder = ShortestPathFinder()
-            pathfinder.initialize_map(game_state)  # Ensure the map is initialized
+        # Interceptor 3: dynamic floater
+        float_spawn = interceptor_pos[0]  # default
 
-            # Flatten and filter only valid (x, y) tuples
-            enemy_edges_raw = game_state.game_map.get_edges()[2:]  # Bottom + Left edges
-            enemy_edges = [point for edge in enemy_edges_raw for point in edge if isinstance(point, (tuple, list)) and len(point) == 2]
-            ideal_path_left = pathfinder.navigate_multiple_endpoints(
-                spawn_positions[0], enemy_edges, game_state
+        if self.breaches_last_turn:
+            last_breach = self.breaches_last_turn[-1]
+            gamelib.debug_write(last_breach)
+            breached_side = "left" if int(last_breach[0][0]) < 14 else "right"
+            float_spawn = (
+                interceptor_pos[0] if breached_side == "left" else interceptor_pos[1]
             )
-            ideal_path_right = pathfinder.navigate_multiple_endpoints(
-                spawn_positions[1], enemy_edges, game_state
-            )
+            gamelib.debug_write(f"Floating interceptor redirected to {breached_side}")
 
-            # Analyze enemy structures along the paths
-            def analyze_path(path):
-                enemy_structures = []
-                for location in path:
-                    if game_state.game_map[location]:  # Check if there are units at the location
-                        unit = game_state.game_map[location][0]
-                        if unit.player_index != 0:  # Enemy structure
-                            unit_config = self.config["unitInformation"][unit.unit_type]
-                            enemy_structures.append({
-                                "location": location,
-                                "health": unit.health,
-                                "type": unit.unit_type,
-                                "range": unit_config.get("attackRange", 0),
-                                "damage": unit_config.get("attackDamageWalker", 0)
-                            })
-                return enemy_structures
+        game_state.attempt_spawn(INTERCEPTOR, float_spawn)
 
-            if ideal_path_left:
-                enemy_structures_left = analyze_path(ideal_path_left)
-            if ideal_path_right:
-                enemy_structures_right = analyze_path(ideal_path_right)
+        # attack logic
+        spawn_side = left_spawns if self.scout_attack_side else right_spawns
 
-            # Simulate damage and decide unit deployment
-            def simulate_and_deploy(path, enemy_structures):
-                total_damage = sum(structure["damage"] for structure in enemy_structures)
-
-                # Decide unit type and quantity
-                if total_damage == 0:
-                    # No defenses, send Scouts to score
-                    game_state.attempt_spawn(SCOUT, path[0], 5)  # Deploy 5 Scouts
-                else:
-                    # Defenses present, calculate required units
-                    total_health = sum(structure["health"] for structure in enemy_structures)
-                    if total_health < 50:  # Arbitrary threshold for weak defenses
-                        game_state.attempt_spawn(SCOUT, path[0], 5)  # Deploy 5 Scouts
-                    else:
-                        game_state.attempt_spawn(DEMOLISHER, path[0], 3)  # Deploy 3 Demolishers
-
-            if ideal_path_left:
-                # Simulate and deploy for left path
-                simulate_and_deploy(ideal_path_left, enemy_structures_left)
-            if ideal_path_right:
-                simulate_and_deploy(ideal_path_right, enemy_structures_right)
-            
-
+        if game_state.turn_number % 2 == 0 and game_state.turn_number % 4 != 0:
+            game_state.attempt_spawn(DEMOLISHER, spawn_side, 1)
+            self.scout_attack_side = not self.scout_attack_side
+        if game_state.turn_number % 4 == 0:
+            scout_count = min(15, 3 + (game_state.turn_number // 2))
+            scout_spawn_side = left_spawns if self.scout_attack_side else right_spawns
+            spawn_point = scout_spawn_side[0]  # fixed spawn point for grouped attack
+            game_state.attempt_spawn(SCOUT, spawn_point, scout_count)
+            gamelib.debug_write(f"Sent {scout_count} SCOUTS from {spawn_point}")
+            self.scout_attack_side = not self.scout_attack_side
+        else:
+            gamelib.debug_write(f"Odd Turn: Holding MP for stronger wave")
 
 
 if __name__ == "__main__":
