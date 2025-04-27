@@ -1,3 +1,11 @@
+# Citadel Europe Terminal 2025
+
+This is [Shai's](https://www.github.com/Shai-O) and my algo submission for the Citadel Europe Terminal 2025, with which we finished in the top 5.
+
+Made in Python, this repo contains the starter kit, as well as our implementation [here](https://www.github.com/davidlesman/europe-terminal-2025/tree/main/python-algo/algo_strategy.py).
+
+Below follows the README from the original starter kit.
+
 # C1GamesStarterKit
 
 Welcome to the C1 Terminal Starter Kit! The repository contains a collection of scripts and 
